@@ -31,6 +31,7 @@ pub fn get_cpp_typename_without_namespace<'a>(
     ctx: &'a BindgenContext,
     item: &'a Item,
 ) -> Result<&'a str, WhyNoWrapper> {
+    dbg!(item);
     let typ = item.kind().expect_type();
     if let Some(name) = typ.name() {
         return Ok(name);

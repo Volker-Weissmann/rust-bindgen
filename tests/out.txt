@@ -1,0 +1,62 @@
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+
+running 1 test
+cargo:rerun-if-changed=/usr/bin/../lib64/gcc/x86_64-pc-linux-gnu/10.2.0/../../../../include/c++/10.2.0/cstdio
+cargo:rerun-if-changed=/usr/bin/../lib64/gcc/x86_64-pc-linux-gnu/10.2.0/../../../../include/c++/10.2.0/x86_64-pc-linux-gnu/bits/c++config.h
+cargo:rerun-if-changed=/usr/bin/../lib64/gcc/x86_64-pc-linux-gnu/10.2.0/../../../../include/c++/10.2.0/x86_64-pc-linux-gnu/bits/os_defines.h
+cargo:rerun-if-changed=/usr/include/features.h
+cargo:rerun-if-changed=/usr/include/stdc-predef.h
+cargo:rerun-if-changed=/usr/include/sys/cdefs.h
+cargo:rerun-if-changed=/usr/include/bits/wordsize.h
+cargo:rerun-if-changed=/usr/include/bits/long-double.h
+cargo:rerun-if-changed=/usr/include/gnu/stubs.h
+cargo:rerun-if-changed=/usr/include/gnu/stubs-64.h
+cargo:rerun-if-changed=/usr/bin/../lib64/gcc/x86_64-pc-linux-gnu/10.2.0/../../../../include/c++/10.2.0/x86_64-pc-linux-gnu/bits/cpu_defines.h
+cargo:rerun-if-changed=/usr/include/stdio.h
+cargo:rerun-if-changed=/usr/include/bits/libc-header-start.h
+cargo:rerun-if-changed=/usr/include/features.h
+cargo:rerun-if-changed=/usr/lib/clang/11.0.0/include/stddef.h
+cargo:rerun-if-changed=/usr/lib/clang/11.0.0/include/stdarg.h
+cargo:rerun-if-changed=/usr/include/bits/types.h
+cargo:rerun-if-changed=/usr/include/features.h
+cargo:rerun-if-changed=/usr/include/bits/wordsize.h
+cargo:rerun-if-changed=/usr/include/bits/timesize.h
+cargo:rerun-if-changed=/usr/include/bits/typesizes.h
+cargo:rerun-if-changed=/usr/include/bits/time64.h
+cargo:rerun-if-changed=/usr/include/bits/types/__fpos_t.h
+cargo:rerun-if-changed=/usr/include/bits/types.h
+cargo:rerun-if-changed=/usr/include/bits/types/__mbstate_t.h
+cargo:rerun-if-changed=/usr/include/bits/types/__fpos64_t.h
+cargo:rerun-if-changed=/usr/include/bits/types.h
+cargo:rerun-if-changed=/usr/include/bits/types/__mbstate_t.h
+cargo:rerun-if-changed=/usr/include/bits/types/__FILE.h
+cargo:rerun-if-changed=/usr/include/bits/types/FILE.h
+cargo:rerun-if-changed=/usr/include/bits/types/struct_FILE.h
+cargo:rerun-if-changed=/usr/include/bits/types.h
+cargo:rerun-if-changed=/usr/include/bits/types/cookie_io_functions_t.h
+cargo:rerun-if-changed=/usr/include/bits/types.h
+cargo:rerun-if-changed=/usr/include/bits/stdio_lim.h
+cargo:rerun-if-changed=/usr/include/bits/floatn.h
+cargo:rerun-if-changed=/usr/include/features.h
+cargo:rerun-if-changed=/usr/include/bits/floatn-common.h
+cargo:rerun-if-changed=/usr/include/features.h
+cargo:rerun-if-changed=/usr/include/bits/long-double.h
+cargo:rerun-if-changed=/usr/include/bits/floatn.h
+test volkertest ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 499 filtered out
+

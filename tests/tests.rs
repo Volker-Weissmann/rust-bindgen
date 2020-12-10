@@ -204,7 +204,7 @@ fn compare_generated_header(
             let actual = bindings.to_string();
             rustfmt(actual)
         }
-        Err(()) => ("<error generating bindings>".to_string(), "".to_string()),
+        Err(e) => (format!("<error generating bindings>: {:?}\n", e), "".to_string()),
     };
     println!("{}", rustfmt_stderr);
 
@@ -239,14 +239,17 @@ fn compare_generated_header(
                 let mut expectation_file =
                     fs::File::create(looked_at.last().unwrap())?;
                 expectation_file.write_all(actual.as_bytes())?;
-            } else { //usecase: var = "meld" -> You can hand check differences
-                let actual_result_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("meld_bindings.rs");
+            } else {
+                //usecase: var = "meld" -> You can hand check differences
+                let actual_result_path =
+                    PathBuf::from(env::var("OUT_DIR").unwrap())
+                        .join("meld_bindings.rs");
                 let mut actual_result_file =
                     fs::File::create(&actual_result_path)?;
                 actual_result_file.write_all(actual.as_bytes())?;
                 std::process::Command::new(var)
-                .args(&[looked_at.last().unwrap(), &actual_result_path])
-                .output()?;
+                    .args(&[looked_at.last().unwrap(), &actual_result_path])
+                    .output()?;
             }
         }
 
@@ -352,6 +355,7 @@ macro_rules! test_header {
         #[test]
         fn $function() {
             let header = PathBuf::from($header);
+
             let result = create_bindgen_builder(&header).and_then(|builder| {
                 let check_roundtrip =
                     env::var_os("BINDGEN_DISABLE_ROUNDTRIP_TEST").is_none();
@@ -361,6 +365,63 @@ macro_rules! test_header {
             if let Err(err) = result {
                 panic!("{}", err);
             }
+        }
+    };
+}
+
+macro_rules! test_wrapper_generation {
+    ($function:ident, $header:expr) => {
+        #[test]
+        fn $function() {
+            let header = PathBuf::from($header);
+            let builder = bindgen::Builder::default()
+                .header($header)
+                .clang_arg("-x")
+                .clang_arg("c++")
+                .clang_arg("-fblocks")
+                .gen_safe_wrappers(true);
+
+            let gen_rs_path = format!(
+                "{}/{}.rs",
+                std::env::var("OUT_DIR").unwrap(),
+                header.file_name().unwrap().to_str().unwrap().replace(".", "_")
+            );
+
+            let actual = builder.generate().unwrap_or_else(|e| panic!("builder.generate() returned\n{:?}", e)).to_string();
+            let (actual, stderr) = rustfmt(actual);
+            println!("{}", stderr);
+            let mut file: std::fs::File = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&gen_rs_path)
+                .unwrap();
+            file.write(actual.as_bytes()).expect("unable to write");
+            drop(file);
+
+            let mut args = vec![
+                "--edition=2018",
+                // "--error-format=json",
+                // "--json=diagnostic-rendered-ansi",
+                "--crate-type",
+                "lib",
+                "--emit=dep-info,metadata",
+                "-C",
+                "embed-bitcode=no",
+                "-C",
+                "debuginfo=2"
+            ];
+
+            dbg!(&gen_rs_path);
+            args.push(&gen_rs_path);
+
+            let mut command = std::process::Command::new("rustc");
+            command.args(&args);
+            let status = command.status().expect(&format!(
+                "We are unable start rustc using the command {:?}",
+                command
+            )); // TODO stdout of rustc should be piped to stderr
+            assert!(status.success(), format!("We are unable to compile our generated bindings using the command {:?}", command));
         }
     };
 }
@@ -513,4 +574,16 @@ fn dump_preprocessed_input() {
         bindgen_ii.find(&empty_layout).is_some(),
         "cpp-empty-layout.hpp is in the preprocessed file"
     );
+}
+
+#[test]
+fn volkertest() {
+    let _ = bindgen::Builder::default()
+        .header("/home/volker/Sync/git/rust-bindgen/safe_wrappers/example.cpp")
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks))
+        .clang_arg("-x")
+        .clang_arg("c++")
+        //.gen_safe_wrappers(true)
+        .generate()
+        .expect("Unable to generate bindings");
 }

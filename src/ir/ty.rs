@@ -742,7 +742,463 @@ pub enum TypeKind {
     ObjCSel,
 }
 
+pub enum ExtractedRet {
+    TypeKind(TypeKind),
+    EarlyRet(crate::parse::ParseResult<Type>),
+}
+
 impl Type {
+    pub fn extracted(ty_kind: i32,
+        potential_id: ItemId,
+        ty: &clang::Type,
+        location: Cursor,
+        parent_id: Option<ItemId>,
+        ctx: &mut BindgenContext,
+        canonical_ty: clang::Type,
+        name: &mut String,
+    cursor: &Cursor) -> Result<ExtractedRet, ParseError> {
+        use clang_sys::*;
+        let temp1 = match ty_kind {
+            CXType_Unexposed
+                if *ty != canonical_ty &&
+                                canonical_ty.kind() != CXType_Invalid &&
+                                ty.ret_type().is_none() &&
+                                // Sometime clang desugars some types more than
+                                // what we need, specially with function
+                                // pointers.
+                                //
+                                // We should also try the solution of inverting
+                                // those checks instead of doing this, that is,
+                                // something like:
+                                //
+                                // CXType_Unexposed if ty.ret_type().is_some()
+                                //   => { ... }
+                                //
+                                // etc.
+                                !canonical_ty.spelling().contains("type-parameter") =>
+            {
+                debug!("Looking for canonical type: {:?}", canonical_ty);
+                if format!("{:?}", &ctx).contains("pubmember") {
+                    panic!();
+                }
+                dbg!();
+                return Ok(ExtractedRet::EarlyRet(Self::from_clang_ty(
+                    potential_id,
+                    &canonical_ty,
+                    location,
+                    parent_id,
+                    ctx,
+                )?));
+            }
+            CXType_Unexposed | CXType_Invalid => {
+                // For some reason Clang doesn't give us any hint in some
+                // situations where we should generate a function pointer (see
+                // tests/headers/func_ptr_in_struct.h), so we do a guess here
+                // trying to see if it has a valid return type.
+                if ty.ret_type().is_some() {
+                    let signature =
+                        FunctionSig::from_ty(ty, &location, ctx)?;
+                    TypeKind::Function(signature)
+                // Same here, with template specialisations we can safely
+                // assume this is a Comp(..)
+                } else if ty.is_fully_instantiated_template() {
+                    debug!(
+                        "Template specialization: {:?}, {:?} {:?}",
+                        ty, location, canonical_ty
+                    );
+                    dbg!();
+                    let complex = CompInfo::from_ty(
+                        potential_id,
+                        ty,
+                        Some(location),
+                        ctx,
+                    )
+                    .expect("C'mon");
+                    if format!("{:?}", &ctx).contains("pubmember") {
+                        panic!();
+                    }
+                    TypeKind::Comp(complex)
+                } else {
+                    if format!("{:?}", &ctx).contains("pubmember") {
+                        panic!();
+                    }
+                    match location.kind() {
+                        CXCursor_CXXBaseSpecifier |
+                        CXCursor_ClassTemplate => {
+                            if location.kind() == CXCursor_CXXBaseSpecifier
+                            {
+                                // In the case we're parsing a base specifier
+                                // inside an unexposed or invalid type, it means
+                                // that we're parsing one of two things:
+                                //
+                                //  * A template parameter.
+                                //  * A complex class that isn't exposed.
+                                //
+                                // This means, unfortunately, that there's no
+                                // good way to differentiate between them.
+                                //
+                                // Probably we could try to look at the
+                                // declaration and complicate more this logic,
+                                // but we'll keep it simple... if it's a valid
+                                // C++ identifier, we'll consider it as a
+                                // template parameter.
+                                //
+                                // This is because:
+                                //
+                                //  * We expect every other base that is a
+                                //    proper identifier (that is, a simple
+                                //    struct/union declaration), to be exposed,
+                                //    so this path can't be reached in that
+                                //    case.
+                                //
+                                //  * Quite conveniently, complex base
+                                //    specifiers preserve their full names (that
+                                //    is: Foo<T> instead of Foo). We can take
+                                //    advantage of this.
+                                //
+                                // If we find some edge case where this doesn't
+                                // work (which I guess is unlikely, see the
+                                // different test cases[1][2][3][4]), we'd need
+                                // to find more creative ways of differentiating
+                                // these two cases.
+                                //
+                                // [1]: inherit_named.hpp
+                                // [2]: forward-inherit-struct-with-fields.hpp
+                                // [3]: forward-inherit-struct.hpp
+                                // [4]: inherit-namespaced.hpp
+                                if location.spelling().chars().all(|c| {
+                                    c.is_alphanumeric() || c == '_'
+                                }) {
+                                    dbg!();
+                                    return Err(ParseError::Recurse);
+                                }
+                            } else {
+                                *name = location.spelling();
+                            }
+
+                            let complex = CompInfo::from_ty(
+                                potential_id,
+                                ty,
+                                Some(location),
+                                ctx,
+                            );
+                            match complex {
+                                Ok(complex) => TypeKind::Comp(complex),
+                                Err(_) => {
+                                    warn!(
+                                        "Could not create complex type \
+                                         from class template or base \
+                                         specifier, using opaque blob"
+                                    );
+                                    let opaque =
+                                        Opaque::from_clang_ty(ty, ctx);
+                                    dbg!();
+                                    return Ok(ExtractedRet::EarlyRet(ParseResult::New(
+                                        opaque, None,
+                                    )));
+                                }
+                            }
+                        }
+                        CXCursor_TypeAliasTemplateDecl => {
+                            debug!("TypeAliasTemplateDecl");
+
+                            // We need to manually unwind this one.
+                            let mut inner = Err(ParseError::Continue);
+                            let mut args = vec![];
+
+                            location.visit(|cur| {
+                                match cur.kind() {
+                                    CXCursor_TypeAliasDecl => {
+                                        let current = cur.cur_type();
+
+                                        debug_assert_eq!(
+                                            current.kind(),
+                                            CXType_Typedef
+                                        );
+
+                                        *name = current.spelling();
+
+                                        let inner_ty = cur
+                                            .typedef_type()
+                                            .expect("Not valid Type?");
+                                        inner = Ok(Item::from_ty_or_ref(
+                                            inner_ty,
+                                            cur,
+                                            Some(potential_id),
+                                            ctx,
+                                        ));
+                                    }
+                                    CXCursor_TemplateTypeParameter => {
+                                        let param = Item::type_param(
+                                            None, cur, ctx,
+                                        )
+                                        .expect(
+                                            "Item::type_param shouldn't \
+                                             ever fail if we are looking \
+                                             at a TemplateTypeParameter",
+                                        );
+                                        args.push(param);
+                                    }
+                                    _ => {}
+                                }
+                                CXChildVisit_Continue
+                            });
+
+                            let inner_type = match inner {
+                                Ok(inner) => inner,
+                                Err(..) => {
+                                    warn!(
+                                        "Failed to parse template alias \
+                                         {:?}",
+                                        location
+                                    );
+                                    dbg!();
+                                    return Err(ParseError::Continue);
+                                }
+                            };
+
+                            TypeKind::TemplateAlias(inner_type, args)
+                        }
+                        CXCursor_TemplateRef => {
+                            let referenced = location.referenced().unwrap();
+                            let referenced_ty = referenced.cur_type();
+
+                            debug!(
+                                "TemplateRef: location = {:?}; referenced = \
+                                    {:?}; referenced_ty = {:?}",
+                                location,
+                                referenced,
+                                referenced_ty
+                            );
+                            dbg!();
+                            return Ok(ExtractedRet::EarlyRet(Self::from_clang_ty(
+                                potential_id,
+                                &referenced_ty,
+                                referenced,
+                                parent_id,
+                                ctx,
+                            )?));
+                        }
+                        CXCursor_TypeRef => {
+                            let referenced = location.referenced().unwrap();
+                            let referenced_ty = referenced.cur_type();
+                            let declaration = referenced_ty.declaration();
+
+                            debug!(
+                                "TypeRef: location = {:?}; referenced = \
+                                 {:?}; referenced_ty = {:?}",
+                                location, referenced, referenced_ty
+                            );
+
+                            let id = Item::from_ty_or_ref_with_id(
+                                potential_id,
+                                referenced_ty,
+                                declaration,
+                                parent_id,
+                                ctx,
+                            );
+                            dbg!();
+                            return Ok(ExtractedRet::EarlyRet(ParseResult::AlreadyResolved(
+                                id.into(),
+                            )));
+                        }
+                        CXCursor_NamespaceRef => {
+                            dbg!();
+                            return Err(ParseError::Continue);
+                        }
+                        _ => {
+                            if ty.kind() == CXType_Unexposed {
+                                warn!(
+                                    "Unexposed type {:?}, recursing inside, \
+                                      loc: {:?}",
+                                    ty,
+                                    location
+                                );
+                                dbg!();
+                                return Err(ParseError::Recurse);
+                            }
+
+                            warn!("invalid type {:?}", ty);
+                            dbg!();
+                            return Err(ParseError::Continue);
+                        }
+                    }
+                }
+            }
+            CXType_Auto => {
+                dbg!();
+                if canonical_ty == *ty {
+                    debug!("Couldn't find deduced type: {:?}", ty);
+                    return Err(ParseError::Continue);
+                }
+
+                return Ok(ExtractedRet::EarlyRet(Self::from_clang_ty(
+                    potential_id,
+                    &canonical_ty,
+                    location,
+                    parent_id,
+                    ctx,
+                )?));
+            }
+            // NOTE: We don't resolve pointers eagerly because the pointee type
+            // might not have been parsed, and if it contains templates or
+            // something else we might get confused, see the comment inside
+            // TypeRef.
+            //
+            // We might need to, though, if the context is already in the
+            // process of resolving them.
+            CXType_ObjCObjectPointer |
+            CXType_MemberPointer |
+            CXType_Pointer => {
+                let pointee = ty.pointee_type().unwrap();
+                let inner =
+                    Item::from_ty_or_ref(pointee, location, None, ctx);
+                TypeKind::Pointer(inner)
+            }
+            CXType_BlockPointer => {
+                let pointee = ty.pointee_type().expect("Not valid Type?");
+                let inner =
+                    Item::from_ty_or_ref(pointee, location, None, ctx);
+                TypeKind::BlockPointer(inner)
+            }
+            // XXX: RValueReference is most likely wrong, but I don't think we
+            // can even add bindings for that, so huh.
+            CXType_RValueReference | CXType_LValueReference => {
+                let inner = Item::from_ty_or_ref(
+                    ty.pointee_type().unwrap(),
+                    location,
+                    None,
+                    ctx,
+                );
+                TypeKind::Reference(inner)
+            }
+            // XXX DependentSizedArray is wrong
+            CXType_VariableArray | CXType_DependentSizedArray => {
+                let inner = Item::from_ty(
+                    ty.elem_type().as_ref().unwrap(),
+                    location,
+                    None,
+                    ctx,
+                )
+                .expect("Not able to resolve array element?");
+                TypeKind::Pointer(inner)
+            }
+            CXType_IncompleteArray => {
+                let inner = Item::from_ty(
+                    ty.elem_type().as_ref().unwrap(),
+                    location,
+                    None,
+                    ctx,
+                )
+                .expect("Not able to resolve array element?");
+                TypeKind::Array(inner, 0)
+            }
+            CXType_FunctionNoProto | CXType_FunctionProto => {
+                //dbg!();
+                if format!("{:?}", &ctx).contains("pubmember") {
+                    panic!();
+                }
+                let signature = FunctionSig::from_ty(ty, &location, ctx)?;
+                if format!("{:?}", &ctx).contains("pubmember") {
+                    panic!();
+                }
+                //dbg!();
+                TypeKind::Function(signature)
+            }
+            CXType_Typedef => {
+                let inner = cursor.typedef_type().expect("Not valid Type?");
+                let inner =
+                    Item::from_ty_or_ref(inner, location, None, ctx);
+                TypeKind::Alias(inner)
+            }
+            CXType_Enum => {
+                let enum_ = Enum::from_ty(ty, ctx).expect("Not an enum?");
+
+                if name.is_empty() {
+                    let pretty_name = ty.spelling();
+                    if clang::is_valid_identifier(&pretty_name) {
+                        *name = pretty_name;
+                    }
+                }
+
+                TypeKind::Enum(enum_)
+            }
+            CXType_Record => {
+                let complex = CompInfo::from_ty(
+                    potential_id,
+                    ty,
+                    Some(location),
+                    ctx,
+                )
+                .expect("Not a complex type?");
+
+                if name.is_empty() {
+                    // The pretty-printed name may contain typedefed name,
+                    // but may also be "struct (anonymous at .h:1)"
+                    let pretty_name = ty.spelling();
+                    if clang::is_valid_identifier(&pretty_name) {
+                        *name = pretty_name;
+                    }
+                }
+
+                TypeKind::Comp(complex)
+            }
+            CXType_Vector => {
+                let inner = Item::from_ty(
+                    ty.elem_type().as_ref().unwrap(),
+                    location,
+                    None,
+                    ctx,
+                )
+                .expect("Not able to resolve vector element?");
+                TypeKind::Vector(inner, ty.num_elements().unwrap())
+            }
+            CXType_ConstantArray => {
+                let inner = Item::from_ty(
+                    ty.elem_type().as_ref().unwrap(),
+                    location,
+                    None,
+                    ctx,
+                )
+                .expect("Not able to resolve array element?");
+                TypeKind::Array(inner, ty.num_elements().unwrap())
+            }
+            CXType_Elaborated => {
+                dbg!();
+                return Ok(ExtractedRet::EarlyRet(Self::from_clang_ty(
+                    potential_id,
+                    &ty.named(),
+                    location,
+                    parent_id,
+                    ctx,
+                )?));
+            }
+            CXType_ObjCId => TypeKind::ObjCId,
+            CXType_ObjCSel => TypeKind::ObjCSel,
+            CXType_ObjCClass | CXType_ObjCInterface => {
+                dbg!();
+                let interface = ObjCInterface::from_ty(&location, ctx)
+                    .expect("Not a valid objc interface?");
+                *name = interface.rust_name();
+                TypeKind::ObjCInterface(interface)
+            }
+            CXType_Dependent => {
+                dbg!();
+                return Err(ParseError::Continue);
+            }
+            _ => {
+                warn!(
+                    "unsupported type: kind = {:?}; ty = {:?}; at {:?}",
+                    ty.kind(),
+                    ty,
+                    location
+                );
+                dbg!();
+                return Err(ParseError::Continue);
+            }
+        };
+        return Ok(ExtractedRet::TypeKind(temp1));
+    }
     /// This is another of the nasty methods. This one is the one that takes
     /// care of the core logic of converting a clang type to a `Type`.
     ///
@@ -755,6 +1211,10 @@ impl Type {
         parent_id: Option<ItemId>,
         ctx: &mut BindgenContext,
     ) -> Result<ParseResult<Self>, ParseError> {
+        //dbg!(ty);
+        if format!("{:?}", &ctx).contains("pubmember") {
+            panic!();
+        }
         use clang_sys::*;
         {
             let already_resolved = ctx.builtin_or_resolved_ty(
@@ -763,11 +1223,15 @@ impl Type {
                 ty,
                 Some(location),
             );
+            if format!("{:?}", &ctx).contains("pubmember") {
+                panic!();
+            }
             if let Some(ty) = already_resolved {
                 debug!("{:?} already resolved: {:?}", ty, location);
                 return Ok(ParseResult::AlreadyResolved(ty.into()));
             }
         }
+        //dbg!();
 
         let layout = ty.fallible_layout(ctx).ok();
         let cursor = ty.declaration();
@@ -821,427 +1285,50 @@ impl Type {
                 None,
             ));
         }
+        //dbg!();
 
-        let kind = if location.kind() == CXCursor_TemplateRef ||
+        let mut kind = if location.kind() == CXCursor_TemplateRef ||
             (ty.template_args().is_some() && ty_kind != CXType_Typedef)
         {
+            panic!();
+            dbg!();
             // This is a template instantiation.
             match TemplateInstantiation::from_ty(&ty, ctx) {
                 Some(inst) => TypeKind::TemplateInstantiation(inst),
                 None => TypeKind::Opaque,
             }
         } else {
-            match ty_kind {
-                CXType_Unexposed
-                    if *ty != canonical_ty &&
-                                    canonical_ty.kind() != CXType_Invalid &&
-                                    ty.ret_type().is_none() &&
-                                    // Sometime clang desugars some types more than
-                                    // what we need, specially with function
-                                    // pointers.
-                                    //
-                                    // We should also try the solution of inverting
-                                    // those checks instead of doing this, that is,
-                                    // something like:
-                                    //
-                                    // CXType_Unexposed if ty.ret_type().is_some()
-                                    //   => { ... }
-                                    //
-                                    // etc.
-                                    !canonical_ty.spelling().contains("type-parameter") =>
-                {
-                    debug!("Looking for canonical type: {:?}", canonical_ty);
-                    return Self::from_clang_ty(
-                        potential_id,
-                        &canonical_ty,
-                        location,
-                        parent_id,
-                        ctx,
-                    );
-                }
-                CXType_Unexposed | CXType_Invalid => {
-                    // For some reason Clang doesn't give us any hint in some
-                    // situations where we should generate a function pointer (see
-                    // tests/headers/func_ptr_in_struct.h), so we do a guess here
-                    // trying to see if it has a valid return type.
-                    if ty.ret_type().is_some() {
-                        let signature =
-                            FunctionSig::from_ty(ty, &location, ctx)?;
-                        TypeKind::Function(signature)
-                    // Same here, with template specialisations we can safely
-                    // assume this is a Comp(..)
-                    } else if ty.is_fully_instantiated_template() {
-                        debug!(
-                            "Template specialization: {:?}, {:?} {:?}",
-                            ty, location, canonical_ty
-                        );
-                        let complex = CompInfo::from_ty(
-                            potential_id,
-                            ty,
-                            Some(location),
-                            ctx,
-                        )
-                        .expect("C'mon");
-                        TypeKind::Comp(complex)
-                    } else {
-                        match location.kind() {
-                            CXCursor_CXXBaseSpecifier |
-                            CXCursor_ClassTemplate => {
-                                if location.kind() == CXCursor_CXXBaseSpecifier
-                                {
-                                    // In the case we're parsing a base specifier
-                                    // inside an unexposed or invalid type, it means
-                                    // that we're parsing one of two things:
-                                    //
-                                    //  * A template parameter.
-                                    //  * A complex class that isn't exposed.
-                                    //
-                                    // This means, unfortunately, that there's no
-                                    // good way to differentiate between them.
-                                    //
-                                    // Probably we could try to look at the
-                                    // declaration and complicate more this logic,
-                                    // but we'll keep it simple... if it's a valid
-                                    // C++ identifier, we'll consider it as a
-                                    // template parameter.
-                                    //
-                                    // This is because:
-                                    //
-                                    //  * We expect every other base that is a
-                                    //    proper identifier (that is, a simple
-                                    //    struct/union declaration), to be exposed,
-                                    //    so this path can't be reached in that
-                                    //    case.
-                                    //
-                                    //  * Quite conveniently, complex base
-                                    //    specifiers preserve their full names (that
-                                    //    is: Foo<T> instead of Foo). We can take
-                                    //    advantage of this.
-                                    //
-                                    // If we find some edge case where this doesn't
-                                    // work (which I guess is unlikely, see the
-                                    // different test cases[1][2][3][4]), we'd need
-                                    // to find more creative ways of differentiating
-                                    // these two cases.
-                                    //
-                                    // [1]: inherit_named.hpp
-                                    // [2]: forward-inherit-struct-with-fields.hpp
-                                    // [3]: forward-inherit-struct.hpp
-                                    // [4]: inherit-namespaced.hpp
-                                    if location.spelling().chars().all(|c| {
-                                        c.is_alphanumeric() || c == '_'
-                                    }) {
-                                        return Err(ParseError::Recurse);
-                                    }
-                                } else {
-                                    name = location.spelling();
-                                }
-
-                                let complex = CompInfo::from_ty(
-                                    potential_id,
-                                    ty,
-                                    Some(location),
-                                    ctx,
-                                );
-                                match complex {
-                                    Ok(complex) => TypeKind::Comp(complex),
-                                    Err(_) => {
-                                        warn!(
-                                            "Could not create complex type \
-                                             from class template or base \
-                                             specifier, using opaque blob"
-                                        );
-                                        let opaque =
-                                            Opaque::from_clang_ty(ty, ctx);
-                                        return Ok(ParseResult::New(
-                                            opaque, None,
-                                        ));
-                                    }
-                                }
-                            }
-                            CXCursor_TypeAliasTemplateDecl => {
-                                debug!("TypeAliasTemplateDecl");
-
-                                // We need to manually unwind this one.
-                                let mut inner = Err(ParseError::Continue);
-                                let mut args = vec![];
-
-                                location.visit(|cur| {
-                                    match cur.kind() {
-                                        CXCursor_TypeAliasDecl => {
-                                            let current = cur.cur_type();
-
-                                            debug_assert_eq!(
-                                                current.kind(),
-                                                CXType_Typedef
-                                            );
-
-                                            name = current.spelling();
-
-                                            let inner_ty = cur
-                                                .typedef_type()
-                                                .expect("Not valid Type?");
-                                            inner = Ok(Item::from_ty_or_ref(
-                                                inner_ty,
-                                                cur,
-                                                Some(potential_id),
-                                                ctx,
-                                            ));
-                                        }
-                                        CXCursor_TemplateTypeParameter => {
-                                            let param = Item::type_param(
-                                                None, cur, ctx,
-                                            )
-                                            .expect(
-                                                "Item::type_param shouldn't \
-                                                 ever fail if we are looking \
-                                                 at a TemplateTypeParameter",
-                                            );
-                                            args.push(param);
-                                        }
-                                        _ => {}
-                                    }
-                                    CXChildVisit_Continue
-                                });
-
-                                let inner_type = match inner {
-                                    Ok(inner) => inner,
-                                    Err(..) => {
-                                        warn!(
-                                            "Failed to parse template alias \
-                                             {:?}",
-                                            location
-                                        );
-                                        return Err(ParseError::Continue);
-                                    }
-                                };
-
-                                TypeKind::TemplateAlias(inner_type, args)
-                            }
-                            CXCursor_TemplateRef => {
-                                let referenced = location.referenced().unwrap();
-                                let referenced_ty = referenced.cur_type();
-
-                                debug!(
-                                    "TemplateRef: location = {:?}; referenced = \
-                                        {:?}; referenced_ty = {:?}",
-                                    location,
-                                    referenced,
-                                    referenced_ty
-                                );
-
-                                return Self::from_clang_ty(
-                                    potential_id,
-                                    &referenced_ty,
-                                    referenced,
-                                    parent_id,
-                                    ctx,
-                                );
-                            }
-                            CXCursor_TypeRef => {
-                                let referenced = location.referenced().unwrap();
-                                let referenced_ty = referenced.cur_type();
-                                let declaration = referenced_ty.declaration();
-
-                                debug!(
-                                    "TypeRef: location = {:?}; referenced = \
-                                     {:?}; referenced_ty = {:?}",
-                                    location, referenced, referenced_ty
-                                );
-
-                                let id = Item::from_ty_or_ref_with_id(
-                                    potential_id,
-                                    referenced_ty,
-                                    declaration,
-                                    parent_id,
-                                    ctx,
-                                );
-                                return Ok(ParseResult::AlreadyResolved(
-                                    id.into(),
-                                ));
-                            }
-                            CXCursor_NamespaceRef => {
-                                return Err(ParseError::Continue);
-                            }
-                            _ => {
-                                if ty.kind() == CXType_Unexposed {
-                                    warn!(
-                                        "Unexposed type {:?}, recursing inside, \
-                                          loc: {:?}",
-                                        ty,
-                                        location
-                                    );
-                                    return Err(ParseError::Recurse);
-                                }
-
-                                warn!("invalid type {:?}", ty);
-                                return Err(ParseError::Continue);
-                            }
-                        }
-                    }
-                }
-                CXType_Auto => {
-                    if canonical_ty == *ty {
-                        debug!("Couldn't find deduced type: {:?}", ty);
-                        return Err(ParseError::Continue);
-                    }
-
-                    return Self::from_clang_ty(
-                        potential_id,
-                        &canonical_ty,
-                        location,
-                        parent_id,
-                        ctx,
-                    );
-                }
-                // NOTE: We don't resolve pointers eagerly because the pointee type
-                // might not have been parsed, and if it contains templates or
-                // something else we might get confused, see the comment inside
-                // TypeRef.
-                //
-                // We might need to, though, if the context is already in the
-                // process of resolving them.
-                CXType_ObjCObjectPointer |
-                CXType_MemberPointer |
-                CXType_Pointer => {
-                    let pointee = ty.pointee_type().unwrap();
-                    let inner =
-                        Item::from_ty_or_ref(pointee, location, None, ctx);
-                    TypeKind::Pointer(inner)
-                }
-                CXType_BlockPointer => {
-                    let pointee = ty.pointee_type().expect("Not valid Type?");
-                    let inner =
-                        Item::from_ty_or_ref(pointee, location, None, ctx);
-                    TypeKind::BlockPointer(inner)
-                }
-                // XXX: RValueReference is most likely wrong, but I don't think we
-                // can even add bindings for that, so huh.
-                CXType_RValueReference | CXType_LValueReference => {
-                    let inner = Item::from_ty_or_ref(
-                        ty.pointee_type().unwrap(),
-                        location,
-                        None,
-                        ctx,
-                    );
-                    TypeKind::Reference(inner)
-                }
-                // XXX DependentSizedArray is wrong
-                CXType_VariableArray | CXType_DependentSizedArray => {
-                    let inner = Item::from_ty(
-                        ty.elem_type().as_ref().unwrap(),
-                        location,
-                        None,
-                        ctx,
-                    )
-                    .expect("Not able to resolve array element?");
-                    TypeKind::Pointer(inner)
-                }
-                CXType_IncompleteArray => {
-                    let inner = Item::from_ty(
-                        ty.elem_type().as_ref().unwrap(),
-                        location,
-                        None,
-                        ctx,
-                    )
-                    .expect("Not able to resolve array element?");
-                    TypeKind::Array(inner, 0)
-                }
-                CXType_FunctionNoProto | CXType_FunctionProto => {
-                    let signature = FunctionSig::from_ty(ty, &location, ctx)?;
-                    TypeKind::Function(signature)
-                }
-                CXType_Typedef => {
-                    let inner = cursor.typedef_type().expect("Not valid Type?");
-                    let inner =
-                        Item::from_ty_or_ref(inner, location, None, ctx);
-                    TypeKind::Alias(inner)
-                }
-                CXType_Enum => {
-                    let enum_ = Enum::from_ty(ty, ctx).expect("Not an enum?");
-
-                    if name.is_empty() {
-                        let pretty_name = ty.spelling();
-                        if clang::is_valid_identifier(&pretty_name) {
-                            name = pretty_name;
-                        }
-                    }
-
-                    TypeKind::Enum(enum_)
-                }
-                CXType_Record => {
-                    let complex = CompInfo::from_ty(
-                        potential_id,
-                        ty,
-                        Some(location),
-                        ctx,
-                    )
-                    .expect("Not a complex type?");
-
-                    if name.is_empty() {
-                        // The pretty-printed name may contain typedefed name,
-                        // but may also be "struct (anonymous at .h:1)"
-                        let pretty_name = ty.spelling();
-                        if clang::is_valid_identifier(&pretty_name) {
-                            name = pretty_name;
-                        }
-                    }
-
-                    TypeKind::Comp(complex)
-                }
-                CXType_Vector => {
-                    let inner = Item::from_ty(
-                        ty.elem_type().as_ref().unwrap(),
-                        location,
-                        None,
-                        ctx,
-                    )
-                    .expect("Not able to resolve vector element?");
-                    TypeKind::Vector(inner, ty.num_elements().unwrap())
-                }
-                CXType_ConstantArray => {
-                    let inner = Item::from_ty(
-                        ty.elem_type().as_ref().unwrap(),
-                        location,
-                        None,
-                        ctx,
-                    )
-                    .expect("Not able to resolve array element?");
-                    TypeKind::Array(inner, ty.num_elements().unwrap())
-                }
-                CXType_Elaborated => {
-                    return Self::from_clang_ty(
-                        potential_id,
-                        &ty.named(),
-                        location,
-                        parent_id,
-                        ctx,
-                    );
-                }
-                CXType_ObjCId => TypeKind::ObjCId,
-                CXType_ObjCSel => TypeKind::ObjCSel,
-                CXType_ObjCClass | CXType_ObjCInterface => {
-                    let interface = ObjCInterface::from_ty(&location, ctx)
-                        .expect("Not a valid objc interface?");
-                    name = interface.rust_name();
-                    TypeKind::ObjCInterface(interface)
-                }
-                CXType_Dependent => {
-                    return Err(ParseError::Continue);
-                }
-                _ => {
-                    warn!(
-                        "unsupported type: kind = {:?}; ty = {:?}; at {:?}",
-                        ty.kind(),
-                        ty,
-                        location
-                    );
-                    return Err(ParseError::Continue);
-                }
-            }
+            TypeKind::Void
         };
 
+        let cond = format!("{:?}", &ctx).contains("pubmember");
+        //dbg!(&ty_kind);
+        if format!("{:?}", &ctx).contains("pubmember") {
+            panic!();
+        }
+
+        let myfunc = Type::extracted;
+
+        dbg!(1);
+        let temp: Result<ExtractedRet, crate::parse::ParseError> = myfunc(
+            ty_kind, 
+            potential_id,
+            ty,
+            location,
+            parent_id,
+            ctx,
+            canonical_ty,
+            &mut name,
+            &cursor);
+        dbg!(2);
+        dbg!(3);
+        if cond {
+            panic!();
+        }
+
+        //let temp1 = temp?;
         let name = if name.is_empty() { None } else { Some(name) };
+        //dbg!(&name);
 
         let is_const = ty.is_const() ||
             (ty.kind() == CXType_ConstantArray &&
@@ -1250,7 +1337,12 @@ impl Type {
 
         let ty = Type::new(name, layout, kind, is_const);
         // TODO: maybe declaration.canonical()?
-        Ok(ParseResult::New(ty, Some(cursor.canonical())))
+        let ret = Ok(ParseResult::New(ty, Some(cursor.canonical())));
+        if format!("{:?}", &ctx).contains("pubmember") {
+            panic!();
+        }
+        //dbg!();
+        ret
     }
 }
 

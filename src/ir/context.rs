@@ -558,6 +558,7 @@ impl BindgenContext {
 - Host vs. target architecture mismatch
 If you encounter an error missing from this list, please file an issue or a PR!")
         };
+        dbg!(&translation_unit, &index);
 
         let target_info = clang::TargetInfo::new(&translation_unit);
         let root_module = Self::build_root_module(ItemId(0));
@@ -660,6 +661,9 @@ If you encounter an error missing from this list, please file an issue or a PR!"
         declaration: Option<Cursor>,
         location: Option<Cursor>,
     ) {
+        if format!("{:?}", &self).contains("pubmember") {
+            panic!();
+        }
         debug!(
             "BindgenContext::add_item({:?}, declaration: {:?}, loc: {:?}",
             item, declaration, location
@@ -680,7 +684,13 @@ If you encounter an error missing from this list, please file an issue or a PR!"
             is_type && item.expect_type().is_template_instantiation();
 
         if item.id() != self.root_module {
+            if format!("{:?}", &self).contains("pubmember") {
+                panic!();
+            }
             self.add_item_to_module(&item);
+            if format!("{:?}", &self).contains("pubmember") {
+                panic!();
+            }
         }
 
         if is_type && item.expect_type().is_comp() {
@@ -720,9 +730,13 @@ If you encounter an error missing from this list, please file an issue or a PR!"
                         .kind()
                         .expect_type()
                 );
+                if format!("{:?}", &self).contains("pubmember") {
+                    panic!();
+                }
+                //dbg!();
                 return;
             }
-
+            dbg!();
             let key = if is_unnamed {
                 TypeKey::Declaration(declaration)
             } else if let Some(usr) = declaration.usr() {

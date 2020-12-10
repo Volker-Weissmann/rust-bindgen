@@ -1297,6 +1297,11 @@ impl ClangItemParser for Item {
         parent_id: Option<ItemId>,
         ctx: &mut BindgenContext,
     ) -> Result<ItemId, ParseError> {
+        //dbg!();
+        if format!("{:?}", ctx).contains("pubmember") {
+            dbg!(&ctx);
+            panic!(); //ctx.items().size_hint().1.unwrap() >= 8
+        }
         use crate::ir::var::Var;
         use clang_sys::*;
 
@@ -1309,7 +1314,7 @@ impl ClangItemParser for Item {
 
         let current_module = ctx.current_module().into();
         let relevant_parent_id = parent_id.unwrap_or(current_module);
-
+        //dbg!();
         macro_rules! try_parse {
             ($what:ident) => {
                 match $what::parse(cursor, ctx) {
@@ -1337,6 +1342,11 @@ impl ClangItemParser for Item {
                 }
             };
         }
+        if format!("{:?}", ctx).contains("pubmember") {
+            dbg!(&ctx);
+            panic!();
+        }
+        //dbg!();
 
         try_parse!(Module);
 
@@ -1349,6 +1359,7 @@ impl ClangItemParser for Item {
         // I guess we can try.
         try_parse!(Function);
         try_parse!(Var);
+        //dbg!();
 
         // Types are sort of special, so to avoid parsing template classes
         // twice, handle them separately.
@@ -1374,6 +1385,10 @@ impl ClangItemParser for Item {
                 }
                 None => relevant_parent_id,
             };
+            if format!("{:?}", ctx).contains("pubmember") {
+                dbg!(&ctx);
+                panic!();
+            }
 
             match Item::from_ty(
                 &applicable_cursor.cur_type(),
@@ -1381,16 +1396,28 @@ impl ClangItemParser for Item {
                 Some(relevant_parent_id),
                 ctx,
             ) {
-                Ok(ty) => return Ok(ty.into()),
+                Ok(ty) => {
+                    if format!("{:?}", ctx).contains("pubmember") {
+                        //dbg!(&ctx);
+                        panic!();
+                    }
+                    return Ok(ty.into())
+                },
                 Err(ParseError::Recurse) => return Err(ParseError::Recurse),
                 Err(ParseError::Continue) => {}
             }
         }
-
+        dbg!();
+        if format!("{:?}", ctx).contains("pubmember") {
+            dbg!(&ctx);
+            panic!(); //ctx.items().size_hint().1.unwrap() >= 8
+        }
         // Guess how does clang treat extern "C" blocks?
         if cursor.kind() == CXCursor_UnexposedDecl {
+            dbg!();
             Err(ParseError::Recurse)
         } else {
+            dbg!();
             // We whitelist cursors here known to be unhandled, to prevent being
             // too noisy about this.
             match cursor.kind() {
@@ -1434,7 +1461,10 @@ impl ClangItemParser for Item {
                     }
                 }
             }
-
+            if format!("{:?}", ctx).contains("pubmember") {
+                dbg!(&ctx);
+                panic!();
+            }
             Err(ParseError::Continue)
         }
     }
@@ -1575,7 +1605,7 @@ impl ClangItemParser for Item {
                 ctx.replace(replaced, id);
             }
         }
-
+        //dbg!();
         if let Some(ty) =
             ctx.builtin_or_resolved_ty(id, parent_id, ty, Some(location))
         {
@@ -1592,7 +1622,7 @@ impl ClangItemParser for Item {
         } else {
             decl
         };
-
+        //dbg!();
         if valid_decl {
             if let Some(partial) = ctx
                 .currently_parsed_types()
@@ -1607,32 +1637,51 @@ impl ClangItemParser for Item {
 
         let current_module = ctx.current_module().into();
         let partial_ty = PartialType::new(declaration_to_look_for, id);
+        if format!("{:?}", &ctx).contains("pubmember") {
+            panic!();
+        }
         if valid_decl {
             ctx.begin_parsing(partial_ty);
         }
-
+        if format!("{:?}", &ctx).contains("pubmember") {
+            panic!();
+        }
+        //dbg!();
         let result = Type::from_clang_ty(id, ty, location, parent_id, ctx);
+        if format!("{:?}", &ctx).contains("pubmember") {
+            panic!();
+        }
         let relevant_parent_id = parent_id.unwrap_or(current_module);
         let ret = match result {
             Ok(ParseResult::AlreadyResolved(ty)) => {
                 Ok(ty.as_type_id_unchecked())
             }
             Ok(ParseResult::New(item, declaration)) => {
+                let temp1 = Item::new(
+                    id,
+                    comment,
+                    annotations,
+                    relevant_parent_id,
+                    ItemKind::Type(item),
+                );
+                //dbg!(&temp1);
+                if format!("{:?}", &ctx).contains("pubmember") {
+                    panic!();
+                }
                 ctx.add_item(
-                    Item::new(
-                        id,
-                        comment,
-                        annotations,
-                        relevant_parent_id,
-                        ItemKind::Type(item),
-                    ),
+                    temp1,
                     declaration,
                     Some(location),
                 );
+                if format!("{:?}", ctx).contains("pubmember") {
+                    //dbg!(&ctx);
+                    panic!();
+                }
                 Ok(id.as_type_id_unchecked())
             }
             Err(ParseError::Continue) => Err(ParseError::Continue),
             Err(ParseError::Recurse) => {
+                dbg!();
                 debug!("Item::from_ty recursing in the ast");
                 let mut result = Err(ParseError::Recurse);
 
@@ -1681,7 +1730,10 @@ impl ClangItemParser for Item {
             let partial_ty = ctx.finish_parsing();
             assert_eq!(*partial_ty.decl(), declaration_to_look_for);
         }
-
+        if format!("{:?}", ctx).contains("pubmember") {
+            dbg!(&ctx);
+            panic!();
+        }
         ret
     }
 

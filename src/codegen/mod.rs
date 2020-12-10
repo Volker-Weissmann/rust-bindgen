@@ -2154,7 +2154,6 @@ impl CompInfo {
                     result.push(item);
                 }
             }
-
             self.codegen_methods(
                 ctx,
                 result,

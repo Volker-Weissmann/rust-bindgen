@@ -2327,7 +2327,12 @@ impl Bindings {
 
         {
             let _t = time::Timer::new("parse").with_output(time_phases);
+            //dbg!(&context);
             parse(&mut context)?;
+            if format!("{:?}", context).contains("pubmember") {
+                dbg!(&context);
+                panic!();
+            }
         }
 
         let ((items, cpp_out), options) = codegen::codegen(context);
@@ -2502,17 +2507,32 @@ fn parse_one(
     cursor: clang::Cursor,
     parent: Option<ItemId>,
 ) -> clang_sys::CXChildVisitResult {
+    if format!("{:?}", ctx).contains("pubmember") {
+        dbg!(&ctx);
+        panic!();
+    }
     if !filter_builtins(ctx, &cursor) {
         return CXChildVisit_Continue;
     }
-
+    if format!("{:?}", ctx).contains("pubmember") {
+        dbg!(&ctx);
+        panic!();
+    }
     use clang_sys::CXChildVisit_Continue;
     match Item::parse(cursor, parent, ctx) {
         Ok(..) => {}
         Err(ParseError::Continue) => {}
         Err(ParseError::Recurse) => {
+            if format!("{:?}", ctx).contains("pubmember") {
+                dbg!(&ctx);
+                panic!();
+            }
             cursor.visit(|child| parse_one(ctx, child, parent));
         }
+    }
+    if format!("{:?}", ctx).contains("pubmember") {
+        //dbg!(&ctx);
+        panic!();
     }
     CXChildVisit_Continue
 }
@@ -2547,11 +2567,27 @@ fn parse(context: &mut BindgenContext) -> Result<(), BindgenError> {
         }
         cursor.visit(|cur| dump_if_not_builtin(&cur));
     }
-
+    if format!("{:?}", &context).contains("pubmember") {
+        dbg!(&context);
+        panic!();
+    }
     let root = context.root_module();
     context.with_module(root, |context| {
-        cursor.visit(|cursor| parse_one(context, cursor, None))
+        if format!("{:?}", &context).contains("pubmember") {
+            dbg!(&context);
+            panic!();
+        }
+        let ret = cursor.visit(|cursor| parse_one(context, cursor, None));
+        if format!("{:?}", &context).contains("pubmember") {
+            dbg!(&context);
+            panic!();
+        }
+        ret
     });
+    if format!("{:?}", &context).contains("pubmember") {
+        dbg!(&context);
+        panic!();
+    }
 
     assert!(
         context.current_module() == context.root_module(),

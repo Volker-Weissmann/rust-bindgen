@@ -45,7 +45,18 @@ pub fn main() {
     #[cfg(feature = "logging")]
     env_logger::init();
 
+    let _ = bindgen::Builder::default()
+        .header("tests/headers/replaces_double.hpp")
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks))
+        .clang_arg("-x")
+        .clang_arg("c++")
+        .gen_safe_wrappers(false)
+        .generate();
+    panic!("It should have crashed before this line");
+
     let bind_args: Vec<_> = env::args().collect();
+    //let bind_args = vec!["/home/volker/Sync/git/rust-bindgen/tests/headers/replaces_double.hpp".to_string()];
+    // /home/volker/Sync/git/rust-bindgen/tests/headers/replaces_double.hpp
 
     match builder_from_flags(bind_args.into_iter()) {
         Ok((builder, output, verbose)) => {

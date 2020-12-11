@@ -204,7 +204,7 @@ fn compare_generated_header(
             let actual = bindings.to_string();
             rustfmt(actual)
         }
-        Err(()) => ("<error generating bindings>".to_string(), "".to_string()),
+        Err(_) => ("<error generating bindings>".to_string(), "".to_string()),
     };
     println!("{}", rustfmt_stderr);
 
@@ -513,4 +513,14 @@ fn dump_preprocessed_input() {
         bindgen_ii.find(&empty_layout).is_some(),
         "cpp-empty-layout.hpp is in the preprocessed file"
     );
+}
+
+#[test]
+fn stack_overflow() {
+    let header = PathBuf::from("tests/headers/replaces_double.hpp");
+    let result = create_bindgen_builder(&header).and_then(|builder| {
+        let check_roundtrip =
+            env::var_os("BINDGEN_DISABLE_ROUNDTRIP_TEST").is_none();
+        compare_generated_header(&header, builder, check_roundtrip)
+    });
 }
